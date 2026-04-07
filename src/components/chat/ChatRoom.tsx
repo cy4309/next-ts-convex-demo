@@ -14,46 +14,58 @@ import {
 } from "react";
 
 const USERNAME_KEY = "chat-demo-username";
+const NAME_MAX_LEN = 24;
 const ACTIVE_MS = 5000;
 const PRESENCE_INTERVAL_MS = 2000;
 const TYPING_IDLE_MS = 2000;
 const TYPING_DEBOUNCE_MS = 350;
 
-const ADJECTIVES = [
-  "Neon",
-  "Quiet",
-  "Swift",
-  "Cosmic",
-  "Silver",
-  "Amber",
-  "Velvet",
-  "Arctic",
-];
-
-function pickUsername(): string {
-  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
-  const n = Math.floor(Math.random() * 900) + 100;
-  return `${adj}${n}`;
+function normalizeDisplayName(raw: string): string {
+  return raw.trim().replace(/\s+/g, " ").slice(0, NAME_MAX_LEN);
 }
 
-function useStableUsername(): string {
-  const [username, setUsername] = useState<string>("");
+function useDisplayName(): {
+  username: string;
+  hydrated: boolean;
+  needsSetup: boolean;
+  commitName: (raw: string) => boolean;
+} {
+  const [username, setUsername] = useState("");
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    let u = localStorage.getItem(USERNAME_KEY);
-    if (!u) {
-      u = pickUsername();
-      localStorage.setItem(USERNAME_KEY, u);
+    const saved = localStorage.getItem(USERNAME_KEY);
+    if (saved) {
+      const n = normalizeDisplayName(saved);
+      if (n) setUsername(n);
     }
-    setUsername(u);
+    setHydrated(true);
   }, []);
 
-  return username;
+  const commitName = useCallback((raw: string) => {
+    const n = normalizeDisplayName(raw);
+    if (!n) return false;
+    localStorage.setItem(USERNAME_KEY, n);
+    setUsername(n);
+    return true;
+  }, []);
+
+  const needsSetup = hydrated && !username;
+
+  return {
+    username,
+    hydrated,
+    needsSetup,
+    commitName,
+  };
 }
 
 export function ChatRoom() {
-  const username = useStableUsername();
+  const { username, hydrated, needsSetup, commitName } = useDisplayName();
+  const [setupDraft, setSetupDraft] = useState("");
+  const [editingName, setEditingName] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
   const messages = useQuery(api.messages.getMessages, {});
   const presenceRows = useQuery(api.presence.getPresence, {
     activeWithinMs: ACTIVE_MS,
@@ -111,11 +123,6 @@ export function ChatRoom() {
       void updatePresence({ user: username, typing: true });
       typingDebounceRef.current = null;
     }, TYPING_DEBOUNCE_MS);
-  }, [updatePresence, username]);
-
-  const clearTypingServer = useCallback(() => {
-    typingRef.current = false;
-    void updatePresence({ user: username, typing: false });
   }, [updatePresence, username]);
 
   useEffect(() => {
@@ -207,10 +214,67 @@ export function ChatRoom() {
     } are typing…`;
   }, [typists]);
 
-  if (!username) {
+  const enterChat = () => {
+    if (commitName(setupDraft)) setSetupDraft("");
+  };
+
+  const startRename = () => {
+    setRenameDraft(username);
+    setEditingName(true);
+  };
+
+  const saveRename = () => {
+    if (commitName(renameDraft)) {
+      setEditingName(false);
+    }
+  };
+
+  if (!hydrated) {
     return (
       <div className="flex min-h-[50vh] items-center justify-center text-zinc-500 text-sm">
-        Preparing session…
+        載入中…
+      </div>
+    );
+  }
+
+  if (needsSetup) {
+    return (
+      <div className="mx-auto flex min-h-[calc(100dvh-2rem)] w-full max-w-md flex-col justify-center px-4 py-10">
+        <div className="rounded-2xl border border-zinc-800/80 bg-zinc-900/50 p-6 shadow-xl backdrop-blur-md">
+          <h1 className="text-lg font-medium tracking-tight text-zinc-100">
+            設定顯示名稱
+          </h1>
+          <p className="mt-2 text-sm leading-relaxed text-zinc-500">
+            名稱會顯示在訊息與在線列表上，方便大家辨識你是誰。僅儲存在此瀏覽器。
+          </p>
+          <label className="mt-6 block text-xs font-medium uppercase tracking-wider text-zinc-500">
+            顯示名稱
+          </label>
+          <input
+            type="text"
+            value={setupDraft}
+            onChange={(e) => setSetupDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") enterChat();
+            }}
+            placeholder="例如：Chester、設計組-阿明"
+            maxLength={NAME_MAX_LEN}
+            autoComplete="username"
+            className="mt-2 w-full rounded-xl border border-zinc-800 bg-zinc-950/80 px-4 py-3 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-zinc-600 focus:ring-1 focus:ring-zinc-600/40"
+            autoFocus
+          />
+          <p className="mt-1.5 text-[11px] text-zinc-600">
+            最多 {NAME_MAX_LEN} 字，可含空格
+          </p>
+          <button
+            type="button"
+            onClick={enterChat}
+            disabled={!normalizeDisplayName(setupDraft)}
+            className="mt-6 w-full rounded-xl border border-zinc-700 bg-zinc-100 py-3 text-sm font-medium text-zinc-900 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            進入聊天室
+          </button>
+        </div>
       </div>
     );
   }
@@ -248,9 +312,61 @@ export function ChatRoom() {
             )}
           </ul>
         </div>
-        <p className="mt-4 px-1 text-[11px] leading-relaxed text-zinc-600">
-          Username is random and stored locally as{" "}
-          <code className="text-zinc-400">{USERNAME_KEY}</code>.
+        <div className="mt-4 space-y-2 rounded-xl border border-zinc-800/60 bg-zinc-950/40 p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.15em] text-zinc-500">
+            你的名稱
+          </p>
+          {editingName ? (
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={renameDraft}
+                onChange={(e) => setRenameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveRename();
+                  if (e.key === "Escape") setEditingName(false);
+                }}
+                maxLength={NAME_MAX_LEN}
+                className="w-full rounded-lg border border-zinc-800 bg-zinc-950/80 px-2.5 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-600"
+                autoFocus
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={saveRename}
+                  disabled={!normalizeDisplayName(renameDraft)}
+                  className="flex-1 rounded-lg bg-zinc-100 py-1.5 text-xs font-medium text-zinc-900 disabled:opacity-40"
+                >
+                  儲存
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingName(false)}
+                  className="flex-1 rounded-lg border border-zinc-700 py-1.5 text-xs text-zinc-300"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-start justify-between gap-2">
+              <p className="min-w-0 flex-1 break-words text-sm text-zinc-200">
+                {username}
+              </p>
+              <button
+                type="button"
+                onClick={startRename}
+                className="shrink-0 text-xs text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline"
+              >
+                更改
+              </button>
+            </div>
+          )}
+        </div>
+        <p className="mt-3 px-1 text-[11px] leading-relaxed text-zinc-600">
+          名稱僅存於此瀏覽器（
+          <code className="text-zinc-400">{USERNAME_KEY}</code>
+          ）。換裝置或清除網站資料需重新設定。
         </p>
       </aside>
 
